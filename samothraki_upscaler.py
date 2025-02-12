@@ -170,22 +170,6 @@ class UpscalerModel(torch.nn.Module):
 NMKD_Upscaler_x2 = UpscalerModel(scale=2)
 NMKD_Upscaler_x4 = UpscalerModel(scale=4)
 
-@timer_func
-def resize_and_upscale(input_image, resolution):
-    if isinstance(input_image, str):
-        input_image = Image.open(input_image)  # Load the image from the file path     
-    scale = 2 if resolution <= 2048 else 4
-    input_image = input_image.convert("RGB")
-    W, H = input_image.size
-    k = float(resolution) / min(H, W)
-    H = int(round(H * k / 64.0)) * 64
-    W = int(round(W * k / 64.0)) * 64
-    img = input_image.resize((W, H), resample=Image.LANCZOS)
-    if scale == 2:
-        img = NMKD_Upscaler_x2.predict(img)
-    else:
-        img = NMKD_Upscaler_x4.predict(img)
-    return img
 
 @timer_func
 def create_hdr_effect(original_image, hdr):
@@ -249,39 +233,49 @@ def wavelet_color_transfer(img1, img2, wavelet='haar', level=2):
 
 
 @timer_func
-def progressive_upscale(input_image, target_resolution, steps=3):
+def progressive_upscale(input_image, scale_factor):
+    """
+    Progressively upscale an image by a given scale factor using appropriate models.
+    
+    Args:
+        input_image: PIL Image or path to image file
+        scale_factor: float, the desired upscaling factor (e.g., 2.0 for 2x upscaling)
+    
+    Returns:
+        PIL Image: The upscaled image
+    """
+    # Load image if path is provided
     if isinstance(input_image, str):
-        input_image = Image.open(input_image)  # Load the image from the file path    
+        input_image = Image.open(input_image)
     current_image = input_image.convert("RGB")
-    current_size = max(current_image.size)
     
-    for _ in range(steps):
-        if current_size >= target_resolution:
-            break
-        
-        scale_factor = min(2, target_resolution / current_size)
-        new_size = (int(current_image.width * scale_factor), int(current_image.height * scale_factor))
-        
-        if scale_factor <= 2.0:
-            current_image = NMKD_Upscaler_x2.predict(current_image)
-        else:
+    # Calculate target dimensions
+    target_width = int(current_image.width * scale_factor)
+    target_height = int(current_image.height * scale_factor)
+    
+    # Determine number of required upscaling steps
+    remaining_scale = scale_factor
+    
+    while remaining_scale > 1.0:
+        if remaining_scale >= 4.0:
             current_image = NMKD_Upscaler_x4.predict(current_image)
-        
-        current_size = max(current_image.size)
-    
-    # Final resize to exact target resolution
-    if current_size != target_resolution:
-        aspect_ratio = current_image.width / current_image.height
-        if current_image.width > current_image.height:
-            new_size = (target_resolution, int(target_resolution / aspect_ratio))
+            remaining_scale /= 4.0
         else:
-            new_size = (int(target_resolution * aspect_ratio), target_resolution)
-        current_image = current_image.resize(new_size, Image.LANCZOS)
+            current_image = NMKD_Upscaler_x2.predict(current_image)
+            remaining_scale /= 2.0
+    
+    # Final resize to exact target dimensions if necessary
+    if (current_image.width != target_width or 
+        current_image.height != target_height):
+        current_image = current_image.resize(
+            (target_width, target_height), 
+            Image.LANCZOS
+        )
     
     return current_image
 
-def prepare_image(input_image, resolution, hdr):
-    upscaled_image = progressive_upscale(input_image, resolution)
+def prepare_image(input_image, scale_by, hdr):
+    upscaled_image = progressive_upscale(input_image, scale_by)
     return create_hdr_effect(upscaled_image, hdr)
 
 def create_gaussian_weight(tile_size, sigma=0.3):
@@ -327,7 +321,7 @@ def process_tile(tile, num_inference_steps, strength, guidance_scale):
     return np.array(lazy_pipe(**options).images[0])
 
 @timer_func
-def process_image(input_image, resolution, num_inference_steps, strength, hdr, guidance_scale):
+def process_image(input_image, scale_by, num_inference_steps, strength, hdr, guidance_scale):
     print("Starting image processing...")
     torch.cuda.empty_cache()
     lazy_pipe.set_scheduler()
@@ -340,7 +334,7 @@ def process_image(input_image, resolution, num_inference_steps, strength, hdr, g
     input_array = np.array(input_image)
     
     # Prepare the condition image
-    condition_image = prepare_image(input_image, resolution, hdr)
+    condition_image = prepare_image(input_image, scale_by, hdr)
     condition_image_numpy = np.array(condition_image)
     W, H = condition_image.size
     
@@ -417,8 +411,8 @@ def main():
         help='Optional: Path to where the upscaled images should be saved. If not set, defaults will depend on whether an image or a directory was provided.')
 
     # Add other parameters as optional arguments that take default values if not specified.
-    parser.add_argument('-r', '--resolution', type=int, default=2048,
-                        help='Resolution of generated image (default: 2048)')
+    parser.add_argument('-r', '--scale_by', type=int, default=2.0,
+                        help='Scale factor (2.0 or 4.0) of generated image (default: 2.0)')
     
     parser.add_argument('-n', '--num_inference_steps', type=int, default=20,
                         help='Number of inference steps for generation (default: 20)')
@@ -452,7 +446,7 @@ def main():
     # Now you can access your variables like this:
     input_image = args.input_image
     input_directory = args.input_directory
-    resolution = args.resolution
+    scale_by = args.scale_by
     num_inference_steps = args.num_inference_steps
     strength = args.strength
     hdr = args.hdr
@@ -462,12 +456,12 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Function to process either a single image or all images in the directory
-    def process_images(input_image, input_directory, resolution, num_inference_steps, strength, hdr, guidance_scale, output_dir):
+    def process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir):
         if input_image:
             # Process single image
             base_path, ext = os.path.splitext(os.path.basename(input_image))
             input_image_path = input_image
-            _, final_result = process_image(input_image_path, resolution, num_inference_steps, strength, 
+            _, final_result = process_image(input_image_path, scale_by, num_inference_steps, strength, 
                                             hdr, guidance_scale)
             final_image = Image.fromarray(final_result)
             output_file = os.path.join(output_dir, f"upscaled_{base_path}{ext}")
@@ -479,7 +473,7 @@ def main():
                 if file_name.lower().endswith(('jpg', 'jpeg', 'png', 'bmp', 'gif')):  # Add more formats as needed
                     input_image_path = os.path.join(input_directory, file_name)
                     base_path, ext = os.path.splitext(file_name)
-                    _, final_result = process_image(input_image_path, resolution, num_inference_steps, 
+                    _, final_result = process_image(input_image_path, scale_by, num_inference_steps, 
                                                     strength, hdr, guidance_scale, )
                     final_image = Image.fromarray(final_result)
                     output_file = os.path.join(output_dir, f"upscaled_{base_path}{ext}")
@@ -491,7 +485,7 @@ def main():
             sys.exit(1)
 
     # Call the process_images function and pass in the required arguments
-    process_images(input_image, input_directory, resolution, num_inference_steps, strength, hdr, guidance_scale, output_dir)
+    process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir)
 
 if __name__ == "__main__":
     main()
