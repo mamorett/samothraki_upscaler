@@ -1,3 +1,7 @@
+import torchvision
+torchvision.disable_beta_transforms_warning = lambda: None
+import warnings
+warnings.simplefilter("ignore", UserWarning)
 import os
 import time
 
@@ -12,7 +16,7 @@ import numpy as np
 import random
 import math
 import sys
-
+from tqdm import tqdm
 import argparse
 from dotenv import load_dotenv
 from torchvision import transforms
@@ -298,7 +302,7 @@ def adaptive_tile_size(image_size, base_tile_size=512, max_tile_size=1024):
 
 def process_tile(tile, num_inference_steps, strength, guidance_scale):
     prompt = "masterpiece, best quality, highres"
-    negative_prompt = "low quality, normal quality, ugly, blurry, blur, lowres, bad anatomy, bad hands, cropped, worst quality, verybadimagenegative_v1.3, JuggernautNegative-neg"
+    negative_prompt = "low quality, normal quality, ugly, blurry, blur, lowres, bad anatomy, bad hands, cropped, worst quality"
     
     # Convert tile to a list for both image and control_image
     if isinstance(tile, Image.Image):
@@ -469,15 +473,23 @@ def main():
 
         elif input_directory:
             # Process all images in the input directory
-            for file_name in os.listdir(input_directory):
+            files = os.listdir(input_directory)  # get list of files in the directory
+            pbar = tqdm(files, desc="Processing images", total=len(files), unit="file")
+            for file_name in pbar:
                 if file_name.lower().endswith(('jpg', 'jpeg', 'png', 'bmp', 'gif')):  # Add more formats as needed
                     input_image_path = os.path.join(input_directory, file_name)
                     base_path, ext = os.path.splitext(file_name)
-                    _, final_result = process_image(input_image_path, scale_by, num_inference_steps, 
-                                                    strength, hdr, guidance_scale, )
-                    final_image = Image.fromarray(final_result)
                     output_file = os.path.join(output_dir, f"upscaled_{base_path}{ext}")
-                    final_image.save(output_file)
+                    # Update tqdm description with the current filename
+                    pbar.set_description(f"Processing {file_name}")  # Use the pbar object to update the description
+                    if os.path.exists(output_file):
+                        print(f"Skipping {file_name}: already exists in output directory.")  # Debugging line  y
+                    else:
+                        _, final_result = process_image(input_image_path, scale_by, num_inference_steps, 
+                                                        strength, hdr, guidance_scale)
+                        final_image = Image.fromarray(final_result)
+                        final_image.save(output_file)
+                    pbar.update(1)  # Increment the progress bar
         else:
             # If neither input_image nor input_directory is set, return error
             print("Error: No input image or directory provided.")
