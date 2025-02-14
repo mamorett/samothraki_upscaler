@@ -89,7 +89,8 @@ class LazyLoadPipeline:
             controlnet=controlnets,
             torch_dtype=torch.float16,
             use_safetensors=True,
-            safety_checker=None
+            safety_checker=None,
+            control_guidance_end=[0.5, 1.0]
         )
 
         vae = AutoencoderKL.from_single_file(
