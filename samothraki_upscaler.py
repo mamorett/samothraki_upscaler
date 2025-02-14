@@ -113,7 +113,6 @@ class LazyLoadPipeline:
 
     def __call__(self, *args, **kwargs):
         return self.pipe(*args, **kwargs)
-
 class UpscalerModel(torch.nn.Module):
     def __init__(self, scale):
         self.scale = scale
@@ -121,14 +120,18 @@ class UpscalerModel(torch.nn.Module):
         # Define your layers here, based on the architecture you expect
         # This is just a placeholder for demonstration purposes
         pass
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.to(device)  # Move model to device once during initialization
     
     def forward(self, x):
         # Define the forward pass of your model
         return x
 
     def predict(self, image):
-        # Load the image
-        # image = Image.open(input_image_path).convert("RGB")
+        if not isinstance(image, Image.Image):
+            raise ValueError("Input must be a PIL Image")
+        if image.mode != "RGB":
+            image = image.convert("RGB")
 
         # Define transformation (resize the image for processing)
         transform = transforms.Compose([
@@ -137,11 +140,11 @@ class UpscalerModel(torch.nn.Module):
             transforms.Lambda(lambda x: x.unsqueeze(0))  # Add batch dimension
         ])
 
-        # Apply transformation
-        image_tensor = transform(image).to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-
-        # Initialize the model
-        model = UpscalerModel(scale=self.scale).to(image_tensor.device)
+        # Add specific exception handling
+        try:
+            image_tensor = transform(image).to(self.device)
+        except RuntimeError as e:
+            raise RuntimeError(f"Failed to transform image: {e}")
 
         # Load the state dictionary from the checkpoint
         state_dict = torch.load(upscale_model)
@@ -154,22 +157,21 @@ class UpscalerModel(torch.nn.Module):
 
         # Load the state dictionary with strict=False to allow mismatched keys
         try:
-            model.load_state_dict(new_state_dict, strict=False)  # Ignore missing/unexpected keys
+            self.load_state_dict(new_state_dict, strict=False)  # Ignore missing/unexpected keys
         except RuntimeError as e:
             print(f"Error loading state_dict: {e}")
 
         # Set the model to evaluation mode
-        model.eval()
+        self.eval()
 
         # Perform inference to upscale the image
         with torch.no_grad():
-            upscaled_tensor = model(image_tensor)
+            upscaled_tensor = self(image_tensor)
 
         # Convert the tensor back to an image
         upscaled_image = upscaled_tensor.squeeze(0).cpu().clamp(0, 1).numpy().transpose(1, 2, 0) * 255
         upscaled_image = Image.fromarray(upscaled_image.astype(np.uint8))
         return upscaled_image
-
 
 NMKD_Upscaler_x2 = UpscalerModel(scale=2)
 NMKD_Upscaler_x4 = UpscalerModel(scale=4)
@@ -282,6 +284,26 @@ def prepare_image(input_image, scale_by, hdr):
     upscaled_image = progressive_upscale(input_image, scale_by)
     return create_hdr_effect(upscaled_image, hdr)
 
+"""
+The first function create_gaussian_weight creates a special weight pattern that looks like a bell curve (Gaussian distribution) across a square grid. 
+It takes two inputs: the size of the square tile and a sigma value (defaulting to 0.3) that controls how quickly the weight falls off from the center.
+The function creates a grid of x and y coordinates, then calculates weights that are highest in the middle and gradually decrease towards the edges.
+This kind of weight pattern is often used in image processing to smoothly blend or transition between different areas.
+
+The second function adaptive_tile_size helps determine appropriate dimensions for processing an image in tiles.
+It takes an image size (width and height) and two optional parameters: a base tile size (default 512) and maximum tile size (default 1024).
+The function calculates tile dimensions that maintain the original image's aspect ratio while staying within the size limits. It does this by:
+1. Calculating the image's aspect ratio (width divided by height)
+2. If the image is wider than tall, it starts with the width and calculates a proportional height
+3. If the image is taller than wide, it starts with the height and calculates a proportional width
+4. Makes sure the tiles aren't smaller than the base size or larger than the maximum size
+The output is a tuple of two numbers representing the width and height of the tiles that should be used for processing the image.
+This adaptive approach helps ensure efficient image processing by using appropriately sized tiles that maintain the image's proportions while staying within reasonable memory limits.
+
+Both functions work together in a larger image processing system, where the gaussian weights might be used for blending tile edges,
+and the adaptive tile sizes help manage memory usage when working with large images.
+"""
+
 def create_gaussian_weight(tile_size, sigma=0.3):
     x = np.linspace(-1, 1, tile_size)
     y = np.linspace(-1, 1, tile_size)
@@ -300,6 +322,35 @@ def adaptive_tile_size(image_size, base_tile_size=512, max_tile_size=1024):
         tile_w = min(int(tile_h * aspect_ratio), max_tile_size)
     return max(tile_w, base_tile_size), max(tile_h, base_tile_size)
 
+
+"""
+This function processes a single tile (portion) of an image using AI image generation techniques.
+
+Purpose: The function takes an image tile and enhances it using AI models (specifically two "controlnets") with some guidance parameters to improve its quality.
+
+Inputs:
+- tile: A piece of an image to process
+- num_inference_steps: How many times the AI should refine the image
+- strength: How much the AI should modify the original image
+- guidance_scale: How closely the AI should follow the given prompts
+
+Outputs:
+- Returns a numpy array containing the processed image tile
+
+How it works:
+First, it sets up two text prompts - one positive ("masterpiece, best quality, highres") telling the AI what to aim for, and one negative ("low quality, ugly, blurry...") telling it what to avoid.
+The function then prepares the tile for processing by duplicating it into a list of two copies - one for each controlnet AI model that will process it.
+
+It creates an options dictionary containing all the settings for the AI processing, including:
+- The prompts
+- The original image tile
+- The duplicated tiles for control
+- Various parameters that control the processing
+- A random seed generator for consistent but unique results
+
+Finally, it runs the image through the AI pipeline (lazy_pipe) with these options and converts the result to a numpy array.
+The key transformation happening here is that each tile gets enhanced by AI models that try to improve its quality while maintaining the original content, guided by the positive and negative prompts.
+"""
 def process_tile(tile, num_inference_steps, strength, guidance_scale):
     prompt = "masterpiece, best quality, highres"
     negative_prompt = "low quality, normal quality, ugly, blurry, blur, lowres, bad anatomy, bad hands, cropped, worst quality"
@@ -493,7 +544,7 @@ def main():
         else:
             # If neither input_image nor input_directory is set, return error
             print("Error: No input image or directory provided.")
-            print("Usage: python script.py --input_image <image_path> OR --input_directory <directory_path>")
+            print("Usage: python samothraki_upscaler.py --input_image <image_path> OR --input_directory <directory_path>")
             sys.exit(1)
 
     # Call the process_images function and pass in the required arguments

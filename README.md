@@ -1,6 +1,17 @@
 # Samothraki Upscaler Documentation
 
-The Samothraki Upscaler is a command-line tool designed for enhancing image quality using advanced upsampling techniques based on Stable Diffusion models.
+The Samothraki Upscaler is a command-line tool designed for enhancing image quality using advanced upsampling techniques based on Stable Diffusion models.Processes either a single image or all images in the provided input directory, upscaling them and saving the results to the specified output directory.
+    
+    Args:
+        input_image (str): Path to the input image to be upscaled.
+        input_directory (str): Path to the directory containing the images to be upscaled.
+        scale_by (int): The scale factor to use for upscaling the images (2.0 or 4.0).
+        num_inference_steps (int): The number of inference steps to use for the upscaling process.
+        strength (float): The strength parameter for the upscaling process.
+        hdr (float): The HDR effect to apply to the generated images.
+        guidance_scale (float): The guidance scale for the upscaling process.
+        output_dir (str): The path to the output directory where the upscaled images will be saved.
+
 
 ## Quick Start Guide
 
@@ -17,6 +28,7 @@ LORA_WEIGHTS_PATH_1="<your_dir>/models/loras/LCM_LoRA_Weights_SD15.safetensors"
 LORA_WEIGHTS_PATH_2="<your_dir>/models/loras/more_details.safetensors"
 UPSCALE_MODEL="<your_dir>/models/upscale_models/4x_NMKD-Siax_200k.pth"
 ```
+
 
 ### Basic Usage
 To use the Samothraki Upscaler, you can run:
@@ -64,9 +76,10 @@ samothraki.upscaler -d input_directory/
   samothraki.upscaler -i image.jpg --strength 0.8
   ```
 
-### Output Directory
+### Output 
 
-If the output directory is not specified, images will be saved in a subdirectory named `upscaled/` by default.
+- Single image mode: Creates an upscaled version with "upscaled_" prefix
+- Directory mode: Creates an "UPSCALED" subdirectory containing all processed images
 
 ### Environment Variables
 
@@ -99,21 +112,6 @@ LORA_WEIGHTS_PATH_2="/gorgon/ia/ComflyUI/models/loras/more_details.safetensors"
 UPSCALE_MODEL="/gorgon/ia/ComfyUI/models/upscale_models/4x_NMKD-Samothraki-128.safetensors"
 ```
 
-## Customization
-
-If you wish to adjust parameters, consider using the following flags:
-
-- `--batch_size`: Number of images to process simultaneously (defaults to 1).
-  
-  ```bash
-  samothraki.upscaler -d input_dir --batch_size 4
-  ```
-
-- `--continue_from`: Resume processing from a specific output folder.
-
-  ```bash
-  samothraki.upscaler -i resume_from/0002.jpg --continue_from resume_from/
-  ```
 
 ## Examples
 
