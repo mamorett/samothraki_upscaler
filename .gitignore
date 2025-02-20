@@ -170,3 +170,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 pappa*
+model-cache/
+controlnet-cache/
+upscale-cache/
+loras-cache/
