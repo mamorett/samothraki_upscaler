@@ -5,23 +5,12 @@ import numpy as np
 from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel, LCMScheduler
 from diffusers.models import AutoencoderKL
 from cog import BasePredictor, Input, Path
-import torch
-from PIL import Image
-import numpy as np
-from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel, LCMScheduler
-from diffusers.models import AutoencoderKL
 import cv2
 import pywt
 import random
 import os
 from torchvision import transforms
 
-
-
-UPSCALEMODEL = [
-    "4x_NMKD-Siax_200k",
-    "4xSSDIRDAT"
-]
 
 class UpscalerModel(torch.nn.Module):
     def __init__(self, scale=2.0):  # Add self parameter and default value
@@ -88,14 +77,6 @@ class Predictor(BasePredictor):
         vae_path = os.path.join(base_path, "model-cache", "vae-ft-mse-840000-ema-pruned.ckpt")  # Update filename
         lora_weights1_path = os.path.join(base_path, "loras-cache", "lcm-lora-sdv1-5.safetensors")  # Update filename
         lora_weights2_path = os.path.join(base_path, "loras-cache", "more_details.safetensors")  # Update filename
-        upscale_model_path = os.path.join(base_path, "upscaler-cache", "4x_NMKD-Siax_200k.pth")
-        upscale_model2_path = os.path.join(base_path, "upscaler-cache", "4xSSDIRDAT.pth")
-
-        # Store the upscaler model paths
-        self.upscaler_paths = {
-            "4x_NMKD-Siax_200k": os.path.join(base_path, "upscaler-cache", "4x_NMKD-Siax_200k.pth"),
-            "4xSSDIRDAT": os.path.join(base_path, "upscaler-cache", "4xSSDIRDAT.pth")
-        }
 
         # Define upscaler model paths
         self.upscalers = {
@@ -238,47 +219,6 @@ class Predictor(BasePredictor):
         
         return np.array(self.pipe(**options).images[0])
     
-
-    def progressive_upscale(input_image, scale_factor):
-        """
-        Progressively upscale an image by a given scale factor using appropriate models.
-        
-        Args:
-            input_image: PIL Image or path to image file
-            scale_factor: float, the desired upscaling factor (e.g., 2.0 for 2x upscaling)
-        
-        Returns:
-            PIL Image: The upscaled image
-        """
-        # Load image if path is provided
-        if isinstance(input_image, str):
-            input_image = Image.open(input_image)
-        current_image = input_image.convert("RGB")
-        
-        # Calculate target dimensions
-        target_width = int(current_image.width * scale_factor)
-        target_height = int(current_image.height * scale_factor)
-        
-        # Determine number of required upscaling steps
-        remaining_scale = scale_factor
-        
-        while remaining_scale > 1.0:
-            if remaining_scale >= 4.0:
-                current_image = NMKD_Upscaler_x4.predict(current_image)
-                remaining_scale /= 4.0
-            else:
-                current_image = NMKD_Upscaler_x2.predict(current_image)
-                remaining_scale /= 2.0
-        
-        # Final resize to exact target dimensions if necessary
-        if (current_image.width != target_width or 
-            current_image.height != target_height):
-            current_image = current_image.resize(
-                (target_width, target_height), 
-                Image.LANCZOS
-            )
-        
-        return current_image    
 
     def create_gaussian_weight(self, tile_size, sigma=0.3):
         x = np.linspace(-1, 1, tile_size)
