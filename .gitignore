@@ -174,3 +174,4 @@ model-cache/
 controlnet-cache/
 upscale-cache/
 loras-cache/
+upscaler-cache/

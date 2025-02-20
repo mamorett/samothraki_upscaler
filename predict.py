@@ -102,7 +102,7 @@ class Predictor(BasePredictor):
             controlnet=controlnets,
             torch_dtype=torch.float16,
             use_safetensors=True,
-            safety_checker=None,
+            # safety_checker=None,
             control_guidance_end=[0.5, 1.0]
         )
         self.pipe.enable_model_cpu_offload()
@@ -129,11 +129,12 @@ class Predictor(BasePredictor):
         image: Path = Input(description="Input image to process"),
         upscaler: str = Input(description="Upscaler", default="4x_NMKD-Siax_200k", choices=["4x_NMKD-Siax_200k", "4xSSDIRDAT"]),
         upscale_by: float = Input(description="Upscale By", default=2.0),        
-        scale_by: float = Input(description="Scale factor for the output image", default=2.0),
         num_inference_steps: int = Input(description="Number of inference steps", default=20),
-        strength: float = Input(description="Strength of the processing", default=1.0),
+        denoise: float = Input(description="Denoise, use 1.0 for best results", default=1.0),
         hdr: float = Input(description="HDR effect intensity", default=0.0),
         guidance_scale: float = Input(description="Guidance scale", default=3.0),
+        color_correction: bool = Input(description="GWavelet Color Correction", default=True),
+
     ) -> Path:
         """Run a single prediction on the model"""
         input_image = Image.open(image)
@@ -151,19 +152,32 @@ class Predictor(BasePredictor):
             raise RuntimeError(f"Error during upscaling: {e}")
 
         torch.cuda.empty_cache()
+
+        if hdr > 0.1:
+            condition_image = self.create_hdr_effect(upscaled_image, hdr)
+        else:
+            condition_image = upscaled_image
         
         # Process the image
         processed_image = self.process_image(
-            upscaled_image,
+            condition_image,
             num_inference_steps,
-            strength,
-            hdr,
+            denoise,
             guidance_scale
         )
         
+        if color_correction:
+            # Apply wavelet color transfer
+            condition_image_numpy = np.array(condition_image)
+            processed_image_numpy = np.array(processed_image)  # Convert to numpy array
+            final_result_numpy = self.wavelet_color_transfer(condition_image_numpy, processed_image_numpy)
+            final_result = Image.fromarray(final_result_numpy)  # Convert back to PIL Image
+        else:
+            final_result = processed_image
+
         # Save and return the result
         output_path = Path("/tmp/output.png")
-        processed_image.save(output_path)
+        final_result.save(output_path)
         return output_path
 
     def create_hdr_effect(self, original_image, hdr):
@@ -227,11 +241,8 @@ class Predictor(BasePredictor):
         gaussian_weight = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
         return gaussian_weight
 
-    def process_image(self, input_image, num_inference_steps, strength, hdr, guidance_scale):
-        # Prepare the condition image
-        condition_image = self.create_hdr_effect(input_image, hdr)
-        
-        condition_image_numpy = np.array(condition_image)
+    def process_image(self, condition_image, num_inference_steps, strength, guidance_scale):
+        # Prepare the condition image       
         W, H = condition_image.size
         
         # Set up tiling
@@ -274,9 +285,5 @@ class Predictor(BasePredictor):
                 weight_sum[top:bottom, left:right] += tile_weight[:, :, np.newaxis]
         
         # Normalize result
-        final_result = (result / weight_sum).astype(np.uint8)
-        
-        # Apply wavelet color transfer
-        final_result = self.wavelet_color_transfer(condition_image_numpy, final_result)
-        
+        final_result = (result / weight_sum).astype(np.uint8)        
         return Image.fromarray(final_result)
