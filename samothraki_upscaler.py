@@ -172,10 +172,17 @@ class UpscalerModel(torch.nn.Module):
         return upscaled_image
 
 
-@timer_func
 def create_hdr_effect(original_image, hdr):
-    if hdr == 0:
-        return original_image
+    """
+    Applies an HDR effect to the given image.
+
+    Args:
+        original_image (PIL.Image.Image): The original image to which the HDR effect will be applied.
+        hdr (float): The intensity of the HDR effect. A higher value results in a stronger effect.
+
+    Returns:
+        PIL.Image.Image: The image with the HDR effect applied.
+    """    
     cv_original = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
     factors = [1.0 - 0.9 * hdr, 1.0 - 0.7 * hdr, 1.0 - 0.45 * hdr,
               1.0 - 0.25 * hdr, 1.0, 1.0 + 0.2 * hdr,
@@ -367,9 +374,12 @@ def process_image(input_image, scale_by, num_inference_steps, strength, hdr, gui
     
     # Prepare the condition image
     condition_image = upscale_image_with_model(input_image, scale_by, "4x_NMKD-Siax_200k")
+    if hdr > 0.0:
+        condition_image = create_hdr_effect(condition_image)
+    
     condition_image_numpy = np.array(condition_image)
     W, H = condition_image.size
-    
+
     # Adaptive tiling
     tile_width, tile_height = adaptive_tile_size((W, H))
     
