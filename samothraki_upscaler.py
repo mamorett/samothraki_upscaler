@@ -4,12 +4,9 @@ import warnings
 warnings.simplefilter("ignore", UserWarning)
 import os
 import time
-
 import torch
-
 from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel, LCMScheduler
 from diffusers.models import AutoencoderKL
-
 from PIL import Image
 import cv2
 import numpy as np
@@ -34,6 +31,11 @@ vae_path = os.getenv("VAE_MODEL_PATH")
 lora_weights1_path = os.getenv("LORA_WEIGHTS_PATH_1")
 lora_weights2_path = os.getenv("LORA_WEIGHTS_PATH_2")
 upscale_model = os.getenv("UPSCALE_MODEL")
+
+# Define upscaler model paths
+upscalers = {
+    "4x_NMKD-Siax_200k": upscale_model,
+}
 
 
 if not all([controlnet_path_1, controlnet_path_2, sd_model_path, vae_path, lora_weights1_path, lora_weights2_path]):
@@ -97,6 +99,7 @@ class LazyLoadPipeline:
             vae_path,
             torch_dtype=torch.float16
         )
+        vae.enable_tiling()
         pipe.vae = vae
         # LCM_LoRA_Weights_SD15.safetensors
         pipe.load_lora_weights(lora_weights1_path)
@@ -114,21 +117,20 @@ class LazyLoadPipeline:
 
     def __call__(self, *args, **kwargs):
         return self.pipe(*args, **kwargs)
-class UpscalerModel(torch.nn.Module):
-    def __init__(self, scale):
-        self.scale = scale
-        super(UpscalerModel, self).__init__()
-        # Define your layers here, based on the architecture you expect
-        # This is just a placeholder for demonstration purposes
-        pass
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.to(device)  # Move model to device once during initialization
     
+    
+class UpscalerModel(torch.nn.Module):
+    def __init__(self, scale=2.0):  # Add self parameter and default value
+        super(UpscalerModel, self).__init__()  # Call parent class init first
+        self.scale = scale
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.to(self.device)  # Move model to device once during initialization
+
     def forward(self, x):
         # Define the forward pass of your model
         return x
 
-    def predict(self, image):
+    def predict(self, image, upscale_model_path):
         if not isinstance(image, Image.Image):
             raise ValueError("Input must be a PIL Image")
         if image.mode != "RGB":
@@ -137,45 +139,37 @@ class UpscalerModel(torch.nn.Module):
         # Define transformation (resize the image for processing)
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Resize((image.height * self.scale, image.width * self.scale)),  # Upscale 2x
+            transforms.Resize((int(image.height * self.scale), int(image.width * self.scale))),
             transforms.Lambda(lambda x: x.unsqueeze(0))  # Add batch dimension
         ])
 
-        # Add specific exception handling
         try:
             image_tensor = transform(image).to(self.device)
         except RuntimeError as e:
             raise RuntimeError(f"Failed to transform image: {e}")
 
         # Load the state dictionary from the checkpoint
-        state_dict = torch.load(upscale_model)
+        state_dict = torch.load(upscale_model_path)
 
-        # Optionally, remove a prefix from keys if needed (as before)
+        # Optionally, remove a prefix from keys if needed
         new_state_dict = {}
         for key, value in state_dict.items():
-            new_key = key.replace("model.", "")  # Adjust the prefix removal based on the error message
+            new_key = key.replace("model.", "")
             new_state_dict[new_key] = value
 
-        # Load the state dictionary with strict=False to allow mismatched keys
         try:
-            self.load_state_dict(new_state_dict, strict=False)  # Ignore missing/unexpected keys
+            self.load_state_dict(new_state_dict, strict=False)
         except RuntimeError as e:
             print(f"Error loading state_dict: {e}")
 
-        # Set the model to evaluation mode
         self.eval()
 
-        # Perform inference to upscale the image
         with torch.no_grad():
             upscaled_tensor = self(image_tensor)
 
-        # Convert the tensor back to an image
         upscaled_image = upscaled_tensor.squeeze(0).cpu().clamp(0, 1).numpy().transpose(1, 2, 0) * 255
         upscaled_image = Image.fromarray(upscaled_image.astype(np.uint8))
         return upscaled_image
-
-NMKD_Upscaler_x2 = UpscalerModel(scale=2)
-NMKD_Upscaler_x4 = UpscalerModel(scale=4)
 
 
 @timer_func
@@ -239,51 +233,34 @@ def wavelet_color_transfer(img1, img2, wavelet='haar', level=2):
     return corrected_img
 
 
-@timer_func
-def progressive_upscale(input_image, scale_factor):
+def upscale_image_with_model(input_image, scale_factor, model):
     """
-    Progressively upscale an image by a given scale factor using appropriate models.
+    Upscale an image by a given scale factor using a specific upscaling model.
     
     Args:
         input_image: PIL Image or path to image file
-        scale_factor: float, the desired upscaling factor (e.g., 2.0 for 2x upscaling)
-    
-    Returns:
+        scale_factor: float, the desired upscaling factor
+        model: UpscalerModel instance for the specific model
+        Returns:
         PIL Image: The upscaled image
     """
     # Load image if path is provided
     if isinstance(input_image, str):
         input_image = Image.open(input_image)
-    current_image = input_image.convert("RGB")
-    
-    # Calculate target dimensions
-    target_width = int(current_image.width * scale_factor)
-    target_height = int(current_image.height * scale_factor)
-    
-    # Determine number of required upscaling steps
-    remaining_scale = scale_factor
-    
-    while remaining_scale > 1.0:
-        if remaining_scale >= 4.0:
-            current_image = NMKD_Upscaler_x4.predict(current_image)
-            remaining_scale /= 4.0
-        else:
-            current_image = NMKD_Upscaler_x2.predict(current_image)
-            remaining_scale /= 2.0
-    
-    # Final resize to exact target dimensions if necessary
-    if (current_image.width != target_width or 
-        current_image.height != target_height):
-        current_image = current_image.resize(
-            (target_width, target_height), 
-            Image.LANCZOS
-        )
-    
-    return current_image
 
-def prepare_image(input_image, scale_by, hdr):
-    upscaled_image = progressive_upscale(input_image, scale_by)
-    return create_hdr_effect(upscaled_image, hdr)
+    # Apply upscaling with selected model and scale factor
+    # Create upscaler model with selected scale factor
+    upscaler_model = UpscalerModel(scale_factor)
+    
+    try:
+        # Get the path for the selected upscaler model
+        upscaler_path = upscalers[model]
+        # Upscale the image
+        upscaled_image = upscaler_model.predict(input_image, upscaler_path)
+    except Exception as e:
+        raise RuntimeError(f"Error during upscaling: {e}")
+    return upscaled_image
+
 
 """
 The first function create_gaussian_weight creates a special weight pattern that looks like a bell curve (Gaussian distribution) across a square grid. 
@@ -359,8 +336,6 @@ def process_tile(tile, num_inference_steps, strength, guidance_scale):
     # Convert tile to a list for both image and control_image
     if isinstance(tile, Image.Image):
         tile_list = [tile] * 2  # Duplicate the tile for both controlnets
-    else:
-        tile_list = [tile] * 2
     
     options = {
         "prompt": prompt,
@@ -371,6 +346,7 @@ def process_tile(tile, num_inference_steps, strength, guidance_scale):
         "strength": strength,
         "guidance_scale": guidance_scale,
         "controlnet_conditioning_scale": [1.0, 0.55],
+        "control_guidance_end": [0.5, 1.0],
         "generator": torch.Generator(device=device).manual_seed(random.randint(0, 2147483647)),
     }
     
@@ -390,7 +366,7 @@ def process_image(input_image, scale_by, num_inference_steps, strength, hdr, gui
     input_array = np.array(input_image)
     
     # Prepare the condition image
-    condition_image = prepare_image(input_image, scale_by, hdr)
+    condition_image = upscale_image_with_model(input_image, scale_by, "4x_NMKD-Siax_200k")
     condition_image_numpy = np.array(condition_image)
     W, H = condition_image.size
     
