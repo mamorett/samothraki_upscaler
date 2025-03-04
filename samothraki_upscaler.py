@@ -99,14 +99,18 @@ class LazyLoadPipeline:
             vae_path,
             torch_dtype=torch.float16
         )
-        vae.enable_tiling()
         pipe.vae = vae
-        # LCM_LoRA_Weights_SD15.safetensors
-        pipe.load_lora_weights(lora_weights1_path)
-        pipe.fuse_lora(lora_scale=1.0)
-        #mode_details.safetensors
-        pipe.load_lora_weights(lora_weights2_path)
-        pipe.fuse_lora(lora_scale=0.25)
+
+        pipe.load_lora_weights(
+            lora_weights1_path,
+            adapter_name="LCM_LoRA_Weights_SD15"  # Assign a unique name
+        )
+        pipe.load_lora_weights(
+            lora_weights2_path,
+            adapter_name="mode_details"  # Assign another unique name
+        )
+        pipe.set_adapters(["LCM_LoRA_Weights_SD15", "mode_details"], adapter_weights=[1.0, 0.25])  # Set scales
+        pipe.fuse_lora()  # Fuse all at once        
         pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
         pipe.enable_freeu(s1=0.9, s2=0.2, b1=1.3, b2=1.4)
         return pipe
@@ -359,8 +363,39 @@ def process_tile(tile, num_inference_steps, strength, guidance_scale):
     
     return np.array(lazy_pipe(**options).images[0])
 
+
+def calculate_tile_parameters(W, H, tilesize):
+    """
+    Calculates and prints tile-related parameters based on image dimensions.
+
+    Args:
+        W: The width of the image.
+        H: The height of the image.
+        tilesize: boolean indicating whether to calculate tile size adaptively.
+    """
+
+    # Adaptive tiling
+    if tilesize:
+        tile_width, tile_height = adaptive_tile_size((W, H))
+    else:
+        tile_width = tile_height = 1024
+    overlap = min(64, tile_width // 8, tile_height // 8)
+    num_tiles_x = math.ceil((W - overlap) / (tile_width - overlap))
+    num_tiles_y = math.ceil((H - overlap) / (tile_height - overlap))
+
+    print(f"Image Width (W): {W}")
+    print(f"Image Height (H): {H}")
+    print(f"Tile Width: {tile_width}")
+    print(f"Tile Height: {tile_height}")
+    print(f"Overlap: {overlap}")
+    print(f"Number of Tiles in X direction: {num_tiles_x}")
+    print(f"Number of Tiles in Y direction: {num_tiles_y}")
+    print(f"Total Number of Tiles: {num_tiles_x*num_tiles_y}")
+    return tile_width, tile_height, overlap, num_tiles_x, num_tiles_y
+
+
 @timer_func
-def process_image(input_image, scale_by, num_inference_steps, strength, hdr, guidance_scale):
+def process_image(input_image, scale_by, num_inference_steps, strength, hdr, guidance_scale, tilesize):
     print("Starting image processing...")
     torch.cuda.empty_cache()
     lazy_pipe.set_scheduler()
@@ -379,15 +414,8 @@ def process_image(input_image, scale_by, num_inference_steps, strength, hdr, gui
     
     condition_image_numpy = np.array(condition_image)
     W, H = condition_image.size
+    tile_width, tile_height, overlap, num_tiles_x, num_tiles_y = calculate_tile_parameters(W, H, tilesize)
 
-    # Adaptive tiling
-    tile_width, tile_height = adaptive_tile_size((W, H))
-    
-    # Calculate the number of tiles
-    overlap = min(64, tile_width // 8, tile_height // 8)  # Adaptive overlap
-    num_tiles_x = math.ceil((W - overlap) / (tile_width - overlap))
-    num_tiles_y = math.ceil((H - overlap) / (tile_height - overlap))
-    
     # Create a blank canvas for the result
     result = np.zeros((H, W, 3), dtype=np.float32)
     weight_sum = np.zeros((H, W, 1), dtype=np.float32)
@@ -468,6 +496,10 @@ def main():
     parser.add_argument('-g', '--guidance_scale', type=float, default=3.0,
                         help='Guidance scale for the generation process (default: 3)')
 
+    # Add the new generate-names option
+    parser.add_argument('--calculate-tiles', '-c', action='store_true',
+                        help='Calculate tile size. If not set tile size is set to 1024')                        
+
     # Parse the command line arguments
     args = parser.parse_args()
 
@@ -498,13 +530,13 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Function to process either a single image or all images in the directory
-    def process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir):
+    def process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir, tilesize):
         if input_image:
             # Process single image
             base_path, ext = os.path.splitext(os.path.basename(input_image))
             input_image_path = input_image
             _, final_result = process_image(input_image_path, scale_by, num_inference_steps, strength, 
-                                            hdr, guidance_scale)
+                                            hdr, guidance_scale, tilesize)
             final_image = Image.fromarray(final_result)
             output_file = os.path.join(output_dir, f"upscaled_{base_path}{ext}")
             final_image.save(output_file)
@@ -524,7 +556,7 @@ def main():
                         print(f"Skipping {file_name}: already exists in output directory.")  # Debugging line  y
                     else:
                         _, final_result = process_image(input_image_path, scale_by, num_inference_steps, 
-                                                        strength, hdr, guidance_scale)
+                                                        strength, hdr, guidance_scale, tilesize)
                         final_image = Image.fromarray(final_result)
                         final_image.save(output_file)
                     pbar.update(1)  # Increment the progress bar
@@ -535,7 +567,7 @@ def main():
             sys.exit(1)
 
     # Call the process_images function and pass in the required arguments
-    process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir)
+    process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir, args.calculate_tiles)
 
 if __name__ == "__main__":
     main()

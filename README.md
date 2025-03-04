@@ -211,6 +211,12 @@ samothraki.upscaler -d input_directory/
   samothraki.upscaler -i image.jpg --strength 0.8
   ```
 
+  - `--calculate-tiles`: Calculate tile size. If not set tile size is set to 1024 (defaults to False).
+
+  ```bash
+  samothraki.upscaler -i image.jpg --calculate-tiles
+  ```
+
 ### Output 
 
 - Single image mode: Creates an upscaled version with "upscaled_" prefix
