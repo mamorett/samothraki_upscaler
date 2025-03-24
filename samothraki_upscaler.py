@@ -465,15 +465,8 @@ def main():
     # Create an argument parser object with a description of your program.
     parser = argparse.ArgumentParser(description='Script for image generation')
 
-    # Create mutual exclusion between input_image and input_directory
-    group = parser.add_mutually_exclusive_group(required=True)
-
-    # Add the input_image parameter which is now part of the mutually exclusive group
-    group.add_argument('-i', '--input_image', help='Path to a single input image.')
-
-    # Also add the input_directory parameter to this same mutual exclusion group 
-    group.add_argument('-d', '--input_directory',
-        help='Path to an directory containing multiple input images or directories.')    
+    # Add a single required positional argument for the input path
+    parser.add_argument('input_path', help='Path to a single input image or directory containing images.')
 
     # Add the output_directory parameter which is optional
     parser.add_argument('-o', '--output_directory',
@@ -503,57 +496,44 @@ def main():
     # Parse the command line arguments
     args = parser.parse_args()
 
+    # Determine output directory based on input type
+    input_path = args.input_path
     if args.output_directory:
         output_dir = args.output_directory
-    elif args.input_image:
+    elif os.path.isfile(input_path):
         # Check if output_directory is specified, else use the current directory
-        if args.output_directory:
-            output_dir = args.output_directory
-        else:
-            output_dir = '.'  # Use the current directory
+        output_dir = '.'
     else:  # If input directory was used and no specific output dir given
-        output_dir = os.path.join(args.input_directory, "UPSCALED")
-        # Create the directory if it doesn't exist
+        output_dir = os.path.join(input_path, "UPSCALED")
 
-    # Create 'upscaled_' prefix for the output image file name
-    # base_path, ext = os.path.splitext(os.path.basename(args.input_image))
-    # Now you can access your variables like this:
-    input_image = args.input_image
-    input_directory = args.input_directory
-    scale_by = args.scale_by
-    num_inference_steps = args.num_inference_steps
-    strength = args.strength
-    hdr = args.hdr
-    guidance_scale = args.guidance_scale
-
-        # Ensure output directory exists
+    # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
     
     # Function to process either a single image or all images in the directory
-    def process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir, tilesize):
-        if input_image:
+    def process_images(input_path, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir, tilesize):
+        if os.path.isfile(input_path) and input_path.lower().endswith(('jpg', 'jpeg', 'png', 'bmp', 'gif')):
             # Process single image
-            base_path, ext = os.path.splitext(os.path.basename(input_image))
-            input_image_path = input_image
+            base_path, ext = os.path.splitext(os.path.basename(input_path))
+            input_image_path = input_path
             _, final_result = process_image(input_image_path, scale_by, num_inference_steps, strength, 
                                             hdr, guidance_scale, tilesize)
             final_image = Image.fromarray(final_result)
             output_file = os.path.join(output_dir, f"upscaled_{base_path}{ext}")
             final_image.save(output_file)
 
-        elif input_directory:
+        elif os.path.isdir(input_path):
             # Process all images in the input directory
-            files = os.listdir(input_directory)  # get list of files in the directory
+            files = os.listdir(input_path)  # get list of files in the directory
             pbar = tqdm(files, desc="Processing images", total=len(files), unit="file")
             for file_name in pbar:
                 if file_name.lower().endswith(('jpg', 'jpeg', 'png', 'bmp', 'gif')):  # Add more formats as needed
-                    input_image_path = os.path.join(input_directory, file_name)
+                    input_image_path = os.path.join(input_path, file_name)
                     base_path, ext = os.path.splitext(file_name)
                     output_file = os.path.join(output_dir, f"upscaled_{base_path}{ext}")
                     # Update tqdm description with the current filename
                     pbar.set_description(f"Processing {file_name}")  # Use the pbar object to update the description
                     if os.path.exists(output_file):
-                        print(f"Skipping {file_name}: already exists in output directory.")  # Debugging line  y
+                        print(f"Skipping {file_name}: already exists in output directory.")  # Debugging line
                     else:
                         _, final_result = process_image(input_image_path, scale_by, num_inference_steps, 
                                                         strength, hdr, guidance_scale, tilesize)
@@ -561,13 +541,13 @@ def main():
                         final_image.save(output_file)
                     pbar.update(1)  # Increment the progress bar
         else:
-            # If neither input_image nor input_directory is set, return error
-            print("Error: No input image or directory provided.")
-            print("Usage: python samothraki_upscaler.py --input_image <image_path> OR --input_directory <directory_path>")
+            # If the input_path is neither a valid image nor a directory, return error
+            print("Error: Input path must be a valid image or directory.")
+            print("Usage: python script.py <image_path_or_directory>")
             sys.exit(1)
 
     # Call the process_images function and pass in the required arguments
-    process_images(input_image, input_directory, scale_by, num_inference_steps, strength, hdr, guidance_scale, output_dir, args.calculate_tiles)
+    process_images(input_path, args.scale_by, args.num_inference_steps, args.strength, args.hdr, args.guidance_scale, output_dir, args.calculate_tiles)
 
 if __name__ == "__main__":
     main()
